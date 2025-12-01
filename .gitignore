@@ -1,0 +1,15 @@
+# Binaries
+kv-rdma
+kv-baseline-server
+kv-baseline-client
+baseline/bin/
+
+# Logs
+logs/
+logs-rdma/
+*.log
+*.txt
+
+# Editor
+.vscode/
+.idea/
