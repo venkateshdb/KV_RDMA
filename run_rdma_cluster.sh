@@ -90,7 +90,7 @@ cleanup
 
 echo "Building..."
 export PATH=$PATH:/usr/local/go/bin
-go build -o kv-rdma cmd/main.go
+go build -o kv-rdma rdma_cli/main.go
 
 # Start Servers
 for node in "${SERVER_NODES[@]}"; do

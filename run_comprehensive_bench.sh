@@ -2,9 +2,10 @@
 
 # Configuration
 DURATION=30
-BATCH_SIZE=64
+DEFAULT_BATCH_SIZE=64
 WORKERS=16
 OUTPUT_FILE="benchmark_results.csv"
+BATCH_SIZES=(1 4 16 64)
 
 
 NODES=($( /usr/local/etc/emulab/tmcc hostnames | awk -F"ALIASES='" '{print $2}' | awk '{print $NF}' | sed "s/'//g" | sort ))
@@ -107,100 +108,103 @@ echo "========================================"
 echo "Starting TCP Benchmarks"
 echo "========================================"
 
-for scale in 1 2 4; do
-    echo "Running TCP Scale: ${scale}x${scale}"
-    
-    servers=("${NODES[@]:0:$scale}")
-    clients=("${NODES[@]:$scale:$scale}")
-    
-    cleanup
-    
+for current_batch_size in "${BATCH_SIZES[@]}"; do
+    echo "--- Running TCP Benchmarks with Batch Size: $current_batch_size ---"
+    for scale in 1 2 4; do
+        echo "Running TCP Scale: ${scale}x${scale}"
+        
+        servers=("${NODES[@]:0:$scale}")
+        clients=("${NODES[@]:$scale:$scale}")
+        
+        cleanup
+        
 
-    cpu_starts=()
-    net_starts=()
-    for node in "${servers[@]}"; do
-        cpu_starts+=("$(get_cpu_stat $node)")
-        net_starts+=("$(get_net_stat $node)")
-    done
-    
-    # Start Servers
-    for i in "${!servers[@]}"; do
-        node=${servers[$i]}
-        port=$((8080 + i))
-        ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/baseline/kv-baseline-server -port $port" > /dev/null 2>&1 &
-    done
-    
-    sleep 2
-
-    client_pids=()
-    log_dir="logs/tcp_${scale}"
-    mkdir -p $log_dir
-    
-    for i in "${!clients[@]}"; do
-        node=${clients[$i]}
-        hosts=""
-        for j in "${!servers[@]}"; do
-            if [ $j -gt 0 ]; then hosts+=","; fi
-            hosts+="${servers[$j]}:$((8080 + j))"
+        cpu_starts=()
+        net_starts=()
+        for node in "${servers[@]}"; do
+            cpu_starts+=("$(get_cpu_stat $node)")
+            net_starts+=("$(get_net_stat $node)")
         done
         
-        ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/baseline/kv-baseline-client -hosts $hosts -secs ${DURATION} -workers ${WORKERS} -batch_size ${BATCH_SIZE}" > "$log_dir/client_${node}.log" 2>&1 &
-        client_pids+=($!)
-    done
-    
-   
-    for pid in "${client_pids[@]}"; do
-        wait $pid
-    done
-    
+        # Start Servers
+        for i in "${!servers[@]}"; do
+            node=${servers[$i]}
+            port=$((8080 + i))
+            ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/baseline/kv-baseline-server -port $port" > /dev/null 2>&1 &
+        done
+        
+        sleep 2
 
-    cpu_ends=()
-    net_ends=()
-    for node in "${servers[@]}"; do
-        cpu_ends+=("$(get_cpu_stat $node)")
-        net_ends+=("$(get_net_stat $node)")
-    done
-    
-    # Calculate Metrics
-    total_cpu=0
-    total_bw=0
-    for i in "${!servers[@]}"; do
-        usage=$(calc_cpu_usage "${cpu_starts[$i]}" "${cpu_ends[$i]}")
-        total_cpu=$(echo $total_cpu $usage | awk '{print $1 + $2}')
+        client_pids=()
+        log_dir="logs/tcp_${scale}_batch_${current_batch_size}"
+        mkdir -p $log_dir
         
-        bw=$(calc_net_bw "${net_starts[$i]}" "${net_ends[$i]}" "$DURATION")
-        total_bw=$(echo $total_bw $bw | awk '{print $1 + $2}')
-    done
-    avg_cpu=$(echo $total_cpu $scale | awk '{printf "%.2f", $1 / $2}')
-    
- 
-    total_tput=0
-    total_lat=0
-    count=0
-    for log in $log_dir/*.log; do
-        tput=$(grep "throughput" $log | awk '{print $2}')
-        lat_val=$(grep "avg batch latency" $log | awk '{print $4}' | sed 's/[^0-9.]//g')
-        lat_unit=$(grep "avg batch latency" $log | awk '{print $4}' | sed 's/[0-9.]//g')
+        for i in "${!clients[@]}"; do
+            node=${clients[$i]}
+            hosts=""
+            for j in "${!servers[@]}"; do
+                if [ $j -gt 0 ]; then hosts+=","; fi
+                hosts+="${servers[$j]}:$((8080 + j))"
+            done
+            
+            ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/baseline/kv-baseline-client -hosts $hosts -secs ${DURATION} -workers ${WORKERS} -batch_size ${current_batch_size}" > "$log_dir/client_${node}.log" 2>&1 &
+            client_pids+=($!)
+        done
         
-        if [ ! -z "$tput" ]; then
-            total_tput=$(echo $total_tput $tput | awk '{print $1 + $2}')
-            lat_us=$(parse_latency "$lat_val" "$lat_unit")
-            total_lat=$(echo $total_lat $lat_us | awk '{print $1 + $2}')
-            count=$((count + 1))
+       
+        for pid in "${client_pids[@]}"; do
+            wait $pid
+        done
+        
+
+        cpu_ends=()
+        net_ends=()
+        for node in "${servers[@]}"; do
+            cpu_ends+=("$(get_cpu_stat $node)")
+            net_ends+=("$(get_net_stat $node)")
+        done
+        
+        # Calculate Metrics
+        total_cpu=0
+        total_bw=0
+        for i in "${!servers[@]}"; do
+            usage=$(calc_cpu_usage "${cpu_starts[$i]}" "${cpu_ends[$i]}")
+            total_cpu=$(echo $total_cpu $usage | awk '{print $1 + $2}')
+            
+            bw=$(calc_net_bw "${net_starts[$i]}" "${net_ends[$i]}" "$DURATION")
+            total_bw=$(echo $total_bw $bw | awk '{print $1 + $2}')
+        done
+        avg_cpu=$(echo $total_cpu $scale | awk '{printf "%.2f", $1 / $2}')
+        
+     
+        total_tput=0
+        total_lat=0
+        count=0
+        for log in $log_dir/*.log; do
+            tput=$(grep "throughput" $log | awk '{print $2}')
+            lat_val=$(grep "avg batch latency" $log | awk '{print $4}' | sed 's/[^0-9.]//g')
+            lat_unit=$(grep "avg batch latency" $log | awk '{print $4}' | sed 's/[0-9.]//g')
+            
+            if [ ! -z "$tput" ]; then
+                total_tput=$(echo $total_tput $tput | awk '{print $1 + $2}')
+                lat_us=$(parse_latency "$lat_val" "$lat_unit")
+                total_lat=$(echo $total_lat $lat_us | awk '{print $1 + $2}')
+                count=$((count + 1))
+            fi
+        done
+        
+        if [ $count -gt 0 ]; then
+            avg_lat=$(echo $total_lat $count | awk '{printf "%.2f", $1 / $2}')
+        else
+            avg_lat=0
         fi
+        
+        echo "TCP Result: Tput=$total_tput, Lat=$avg_lat us, CPU=$avg_cpu %, BW=$total_bw MB/s"
+        echo "TCP,$scale,$scale,$current_batch_size,$WORKERS,$total_tput,$avg_lat,$avg_cpu,$total_bw" >> $OUTPUT_FILE
+        
+        cleanup
+        sleep 5
     done
-    
-    if [ $count -gt 0 ]; then
-        avg_lat=$(echo $total_lat $count | awk '{printf "%.2f", $1 / $2}')
-    else
-        avg_lat=0
-    fi
-    
-    echo "TCP Result: Tput=$total_tput, Lat=$avg_lat us, CPU=$avg_cpu %, BW=$total_bw MB/s"
-    echo "TCP,$scale,$scale,$BATCH_SIZE,$WORKERS,$total_tput,$avg_lat,$avg_cpu,$total_bw" >> $OUTPUT_FILE
-    
-    cleanup
-    sleep 5
 done
 
 
@@ -208,94 +212,97 @@ echo "========================================"
 echo "Starting RDMA Benchmarks"
 echo "========================================"
 
-for scale in 1 2 4; do
-    echo "Running RDMA Scale: ${scale}x${scale}"
-    
-    servers=("${NODES[@]:0:$scale}")
-    clients=("${NODES[@]:$scale:$scale}")
-    
-    cleanup
-    
-    cpu_starts=()
-    net_starts=()
-    for node in "${servers[@]}"; do
-        cpu_starts+=("$(get_cpu_stat $node)")
-        net_starts+=("$(get_net_stat $node)")
-    done
-    
-    RDMA_PORT=8090
-    log_dir="logs/rdma_${scale}"
-    mkdir -p $log_dir
-    
-    for i in "${!servers[@]}"; do
-        node=${servers[$i]}
-        ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/kv-rdma -mode server -addr :$RDMA_PORT -dev mlx4_0 -ib-port 2 -gid-index 2" > "$log_dir/server_${node}.log" 2>&1 &
-    done
-    
-    sleep 2
-    
-    client_pids=()
-    hosts=""
-    for j in "${!servers[@]}"; do
-        if [ $j -gt 0 ]; then hosts+=","; fi
-        hosts+="${servers[$j]}:$RDMA_PORT"
-    done
+for current_batch_size in "${BATCH_SIZES[@]}"; do
+    echo "--- Running RDMA Benchmarks with Batch Size: $current_batch_size ---"
+    for scale in 1 2 4; do
+        echo "Running RDMA Scale: ${scale}x${scale}"
         
-    for i in "${!clients[@]}"; do
-        node=${clients[$i]}
-        ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/kv-rdma -mode bench -hosts $hosts -batch-size $BATCH_SIZE -workers $WORKERS -duration ${DURATION}s -dev mlx4_0 -ib-port 2 -gid-index 2" > "$log_dir/client_${node}.log" 2>&1 &
-        client_pids+=($!)
-    done
-    
-    for pid in "${client_pids[@]}"; do
-        wait $pid
-    done
-    cpu_ends=()
-    net_ends=()
-    for node in "${servers[@]}"; do
-        cpu_ends+=("$(get_cpu_stat $node)")
-        net_ends+=("$(get_net_stat $node)")
-    done
-    
-    total_cpu=0
-    total_bw=0
-    for i in "${!servers[@]}"; do
-        usage=$(calc_cpu_usage "${cpu_starts[$i]}" "${cpu_ends[$i]}")
-        total_cpu=$(echo $total_cpu $usage | awk '{print $1 + $2}')
+        servers=("${NODES[@]:0:$scale}")
+        clients=("${NODES[@]:$scale:$scale}")
         
-        bw=$(calc_net_bw "${net_starts[$i]}" "${net_ends[$i]}" "$DURATION")
-        total_bw=$(echo $total_bw $bw | awk '{print $1 + $2}')
-    done
-    avg_cpu=$(echo $total_cpu $scale | awk '{printf "%.2f", $1 / $2}')
-    
-    
-    total_tput=0
-    total_lat=0
-    count=0
-    for log in $log_dir/*.log; do
-    
-        tput=$(grep "Throughput:" $log | awk '{print $2}')
-        lat_val=$(grep "Avg Latency:" $log | awk '{print $3}' | sed 's/[^0-9.]//g')
-        lat_unit=$(grep "Avg Latency:" $log | awk '{print $3}' | sed 's/[0-9.]//g')
+        cleanup
         
-        if [ ! -z "$tput" ]; then
-            total_tput=$(echo $total_tput $tput | awk '{print $1 + $2}')
-            lat_us=$(parse_latency "$lat_val" "$lat_unit")
-            total_lat=$(echo $total_lat $lat_us | awk '{print $1 + $2}')
-            count=$((count + 1))
+        cpu_starts=()
+        net_starts=()
+        for node in "${servers[@]}"; do
+            cpu_starts+=("$(get_cpu_stat $node)")
+            net_starts+=("$(get_net_stat $node)")
+        done
+        
+        RDMA_PORT=8090
+        log_dir="logs/rdma_${scale}_batch_${current_batch_size}"
+        mkdir -p $log_dir
+        
+        for i in "${!servers[@]}"; do
+            node=${servers[$i]}
+            ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/kv-rdma -mode server -addr :$RDMA_PORT -dev mlx4_0 -ib-port 2 -gid-index 2" > "$log_dir/server_${node}.log" 2>&1 &
+        done
+        
+        sleep 2
+        
+        client_pids=()
+        hosts=""
+        for j in "${!servers[@]}"; do
+            if [ $j -gt 0 ]; then hosts+=","; fi
+            hosts+="${servers[$j]}:$RDMA_PORT"
+        done
+            
+        for i in "${!clients[@]}"; do
+            node=${clients[$i]}
+            ssh -o StrictHostKeyChecking=no $node "/mnt/nfs/KV_RDMA/kv-rdma -mode bench -hosts $hosts -batch-size ${current_batch_size} -workers ${WORKERS} -duration ${DURATION}s -dev mlx4_0 -ib-port 2 -gid-index 2" > "$log_dir/client_${node}.log" 2>&1 &
+            client_pids+=($!)
+        done
+        
+        for pid in "${client_pids[@]}"; do
+            wait $pid
+        done
+        cpu_ends=()
+        net_ends=()
+        for node in "${servers[@]}"; do
+            cpu_ends+=("$(get_cpu_stat $node)")
+            net_ends+=("$(get_net_stat $node)")
+        done
+        
+        total_cpu=0
+        total_bw=0
+        for i in "${!servers[@]}"; do
+            usage=$(calc_cpu_usage "${cpu_starts[$i]}" "${cpu_ends[$i]}")
+            total_cpu=$(echo $total_cpu $usage | awk '{print $1 + $2}')
+            
+            bw=$(calc_net_bw "${net_starts[$i]}" "${net_ends[$i]}" "$DURATION")
+            total_bw=$(echo $total_bw $bw | awk '{print $1 + $2}')
+        done
+        avg_cpu=$(echo $total_cpu $scale | awk '{printf "%.2f", $1 / $2}')
+        
+        
+        total_tput=0
+        total_lat=0
+        count=0
+        for log in $log_dir/*.log; do
+        
+            tput=$(grep "Throughput:" $log | awk '{print $2}')
+            lat_val=$(grep "Avg Latency:" $log | awk '{print $3}' | sed 's/[^0-9.]//g')
+            lat_unit=$(grep "Avg Latency:" $log | awk '{print $3}' | sed 's/[0-9.]//g')
+            
+            if [ ! -z "$tput" ]; then
+                total_tput=$(echo $total_tput $tput | awk '{print $1 + $2}')
+                lat_us=$(parse_latency "$lat_val" "$lat_unit")
+                total_lat=$(echo $total_lat $lat_us | awk '{print $1 + $2}')
+                count=$((count + 1))
+            fi
+        done
+        
+        if [ $count -gt 0 ]; then
+            avg_lat=$(echo $total_lat $count | awk '{printf "%.2f", $1 / $2}')
+        else
+            avg_lat=0
         fi
+        
+        echo "RDMA Result: Tput=$total_tput, Lat=$avg_lat us, CPU=$avg_cpu %, BW=$total_bw MB/s"
+        echo "RDMA,$scale,$scale,$current_batch_size,$WORKERS,$total_tput,$avg_lat,$avg_cpu,$total_bw" >> $OUTPUT_FILE
+        
+        cleanup
     done
-    
-    if [ $count -gt 0 ]; then
-        avg_lat=$(echo $total_lat $count | awk '{printf "%.2f", $1 / $2}')
-    else
-        avg_lat=0
-    fi
-    
-    echo "RDMA Result: Tput=$total_tput, Lat=$avg_lat us, CPU=$avg_cpu %, BW=$total_bw MB/s"
-    echo "RDMA,$scale,$scale,$BATCH_SIZE,$WORKERS,$total_tput,$avg_lat,$avg_cpu,$total_bw" >> $OUTPUT_FILE
-    
-    cleanup
 done
 
 echo "Benchmark Complete. Results in $OUTPUT_FILE"
