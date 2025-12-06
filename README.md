@@ -41,7 +41,7 @@ The following table shows the performance comparison between TCP and RDMA implem
 
 ## Resources
 
-- [Presentation Slides](KV_RDMA/RDMA Based KV Store.pdf)
+- [Presentation Slides]([RDMA Based KV Store.pdf](https://github.com/venkateshdb/KV_RDMA/blob/main/RDMA%20Based%20KV%20Store.pdf))
 
 ## Setup
 
