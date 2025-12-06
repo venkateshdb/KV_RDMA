@@ -101,7 +101,7 @@ func (c *Client) connectToServer(serverAddr string) (*ServerConnection, error) {
 	myInfo := HandshakeInfo{
 		QPN:  qp.QPN(),
 		LID:  portAttr.LID,
-		PSN:  5678, // Random PSN
+		PSN:  rand.Uint32() & 0xffffff,
 		RKey: c.mr.RKey(),
 		Addr: c.mr.Addr(),
 		GID:  gid,
